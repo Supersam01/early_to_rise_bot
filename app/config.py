@@ -8,7 +8,7 @@ ADMIN_USERNAME = "@early_to_rise"
 
 # --- DATES & TIMES ---
 # Bot is active only between these dates
-START_DATE = datetime(2026, 1, 18)
+START_DATE = datetime(2026, 1, 16)
 END_DATE = datetime(2026, 2, 28)
 
 # --- BUSINESS RULES ---
@@ -92,3 +92,4 @@ COMBO_CONFIG = {
         "desc": "1 Liquid + 1 Solid"
     }
 }
+
