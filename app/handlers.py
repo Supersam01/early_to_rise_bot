@@ -1,385 +1,353 @@
-from datetime import datetime, timedelta
+import uuid
+from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    CallbackContext, CommandHandler, CallbackQueryHandler,
-    ConversationHandler, MessageHandler, filters, Application
+from telegram.ext import ContextTypes, ConversationType
+
+# Import from your local files
+from .config import (
+    ADMIN_ID, START_DATE, END_DATE, HOSTELS, 
+    PACKAGING_FEE, COMBO_CONFIG
 )
+from .database import (
+    check_stock, reduce_stock, save_order, 
+    get_order, update_order_paid, get_paid_count_for_hostel
+)
+from .utils import calculate_time_slot
 
-from .config import BOT_TOKEN, ADMIN_USER_ID, HOSTEL_PRIORITY, DELIVERY_WINDOW_MINUTES, PACKAGING_FEE_PER_ITEM
-from .database import Database
-from .utils import generate_reference_code, calculate_packaging_fee, validate_combo
-
-db = Database()
-
-# STATES
-START, CHOOSE_HOSTEL, MENU, CART, PAYMENT = range(5)
-
-# MENU ITEMS (Hardcoded)
-MENU = [
-    # Combo A Liquids
-    {"id": 1, "name": "HOT CHOCOLATE WITH WHIPPED CREAM", "price": 2200, "profit": 200, "category": "liquid", "combo": "A"},
-    {"id": 2, "name": "VANILLA MILKSHAKE", "price": 2200, "profit": 200, "category": "liquid", "combo": "A"},
-    {"id": 3, "name": "PINEAPPLE PARFAIT", "price": 2800, "profit": 300, "category": "liquid", "combo": "A"},
-    {"id": 4, "name": "APPLE PARFAIT", "price": 2800, "profit": 300, "category": "liquid", "combo": "A"},
-    {"id": 5, "name": "MIXED FRUITS PARFAIT", "price": 3300, "profit": 300, "category": "liquid", "combo": "A"},
-    {"id": 6, "name": "COOKIES AND CREAM PARFAIT", "price": 3300, "profit": 300, "category": "liquid", "combo": "A"},
-
-    # Combo A Solids
-    {"id": 7, "name": "PANCAKES, EGG AND SYRUP", "price": 700, "profit": 100, "category": "solid", "combo": "A"},
-    {"id": 8, "name": "BANANA PANCAKES", "price": 500, "profit": 100, "category": "solid", "combo": "A"},
-    {"id": 9, "name": "PLAIN PANCAKES", "price": 300, "profit": 100, "category": "solid", "combo": "A"},
-    {"id": 10, "name": "WAFFLES, EGG AND SYRUP", "price": 800, "profit": 100, "category": "solid", "combo": "A"},
-    {"id": 11, "name": "PLAIN WAFFLES", "price": 400, "profit": 100, "category": "solid", "combo": "A"},
-    {"id": 12, "name": "EGG TOAST", "price": 400, "profit": 100, "category": "solid", "combo": "A"},
-    {"id": 13, "name": "EGG SAUCE", "price": 1800, "profit": 200, "category": "solid", "combo": "A"},
-    {"id": 14, "name": "CHICKEN SAUCE SANDWICH", "price": 500, "profit": 100, "category": "solid", "combo": "A"},
-    {"id": 15, "name": "PLAIN DONUT", "price": 600, "profit": 100, "category": "solid", "combo": "A"},
-    {"id": 16, "name": "DONUT WAFFLES", "price": 900, "profit": 100, "category": "solid", "combo": "A"},
-    {"id": 17, "name": "SAUSAGE ROLL", "price": 600, "profit": 100, "category": "solid", "combo": "A"},
-    {"id": 18, "name": "EGG ROLL", "price": 700, "profit": 100, "category": "solid", "combo": "A"},
-
-    # Combo B Liquids
-    {"id": 19, "name": "BLACK COFFEE", "price": 500, "profit": 100, "category": "liquid", "combo": "B"},
-    {"id": 20, "name": "HOT COFFEE", "price": 600, "profit": 100, "category": "liquid", "combo": "B"},
-    {"id": 21, "name": "HOT CHOCOLATE", "price": 600, "profit": 100, "category": "liquid", "combo": "B"},
-    {"id": 22, "name": "COFFEE BANANA SMOOTHIE", "price": 1100, "profit": 100, "category": "liquid", "combo": "B"},
-    {"id": 23, "name": "BANANA PINEY SMOOTHIE", "price": 600, "profit": 100, "category": "liquid", "combo": "B"},
-    {"id": 24, "name": "BANANA MILKSHAKE", "price": 1400, "profit": 200, "category": "liquid", "combo": "B"},
-    {"id": 25, "name": "CHOCOLATE MILKSHAKE", "price": 900, "profit": 100, "category": "liquid", "combo": "B"},
-    {"id": 26, "name": "COFFEE MILKSHAKE", "price": 1400, "profit": 200, "category": "liquid", "combo": "B"},
-    {"id": 27, "name": "OREOS MILKSHAKE", "price": 1400, "profit": 200, "category": "liquid", "combo": "B"},
-
-    # Combo B Solids
-    {"id": 28, "name": "PANCAKES, EGGS, SYRUP AND SAUSAGE", "price": 1100, "profit": 100, "category": "solid", "combo": "B"},
-    {"id": 29, "name": "PANCAKES, EGGS, SYRUP AND CHICKEN", "price": 2200, "profit": 200, "category": "solid", "combo": "B"},
-    {"id": 30, "name": "WAFFLES, EGGS, SYRUP AND CHICKEN", "price": 2800, "profit": 300, "category": "solid", "combo": "B"},
-    {"id": 31, "name": "WAFFLES, EGGS, SAUSAGE AND SYRUP", "price": 1300, "profit": 200, "category": "solid", "combo": "B"},
-    {"id": 32, "name": "FRENCH TOAST", "price": 1700, "profit": 200, "category": "solid", "combo": "B"},
-    {"id": 33, "name": "EGG & CHICKEN SANDWICH", "price": 1400, "profit": 200, "category": "solid", "combo": "B"},
-    {"id": 34, "name": "SUYA STIR FRY SPAGHETTI", "price": 1400, "profit": 200, "category": "solid", "combo": "B"},
-    {"id": 35, "name": "WHITE SPAGHETTI AND SAUCE", "price": 900, "profit": 100, "category": "solid", "combo": "B"},
-    {"id": 36, "name": "GLAZED DONUT", "price": 1400, "profit": 200, "category": "solid", "combo": "B"}
-]
-
-
-def start(update: Update, context: CallbackContext):
+# --- HELPER: CHECK IF BOT IS ACTIVE ---
+def is_shop_open():
     now = datetime.now()
-    start_date = datetime(2026, 1, 18)
-    end_date = datetime(2026, 2, 28)
+    
+    # 1. Date Range Check
+    if not (START_DATE <= now <= END_DATE):
+        return False, "⚠️ We are currently closed.\nWe operate from Jan 18 to Feb 28."
+    
+    # 2. Sunday Check
+    if now.weekday() == 6: # 0=Mon, 6=Sun
+        return False, "⚠️ We are closed on Sundays.\nSee you on Monday!"
+        
+    return True, ""
 
-    if now < start_date or now > end_date:
-        update.message.reply_text("Bot is currently inactive.")
-        return ConversationHandler.END
-
-    keyboard = [
-        [InlineKeyboardButton("Order Combo A", callback_data="combo_A")],
-        [InlineKeyboardButton("Order Combo B", callback_data="combo_B")],
-        [InlineKeyboardButton("View Cart", callback_data="view_cart")],
-    ]
-    update.message.reply_text(
-        "Welcome to *Early To Rise Breakfast*!\n\nChoose a combo to start ordering.",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-    return START
-
-
-def combo_selection(update: Update, context: CallbackContext):
-    query = update.callback_query
-    query.answer()
-    combo_type = query.data.split("_")[1]
-    context.user_data["combo_type"] = combo_type
-    context.user_data["cart"] = []
-    context.user_data["liquid_count"] = 0
-    context.user_data["solid_count"] = 0
-
-    query.edit_message_text(
-        f"Combo {combo_type} selected.\nYou must select according to the rules.\n\nCombo A = 1 Liquid + 2 Solids\nCombo B = 1 Liquid + 1 Solid\n\nClick below to view menu.",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("Show Menu", callback_data="show_menu")],
-            [InlineKeyboardButton("View Cart", callback_data="view_cart")],
-            [InlineKeyboardButton("Cancel", callback_data="cancel_order")]
-        ])
-    )
-    return MENU
-
-
-def show_menu(update: Update, context: CallbackContext):
-    query = update.callback_query
-    query.answer()
-
-    combo_type = context.user_data.get("combo_type")
-
-    message = "📋 *MENU*\n\n"
-
-    # show only combo selected items
-    for item in MENU:
-        if item["combo"] == combo_type:
-            message += f"{item['id']}. {item['name']} - ₦{item['price']}\n"
-
-    message += "\nSend the item ID to add to cart.\nExample: `7`"
-
-    query.edit_message_text(
-        message,
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("View Cart", callback_data="view_cart")],
-            [InlineKeyboardButton("Cancel", callback_data="cancel_order")]
-        ])
-    )
-    return MENU
-
-
-def receive_item_id(update: Update, context: CallbackContext):
-    text = update.message.text.strip()
-    if not text.isdigit():
-        return update.message.reply_text("Send a valid item ID (number).")
-
-    item_id = int(text)
-    combo_type = context.user_data.get("combo_type")
-
-    # find item
-    item = next((x for x in MENU if x["id"] == item_id and x["combo"] == combo_type), None)
-    if not item:
-        return update.message.reply_text("Invalid item ID for your combo.")
-
-    # check stock
-    stock = db.conn.execute("SELECT stock FROM menu WHERE id = ?", (item_id,)).fetchone()
-    if not stock:
-        return update.message.reply_text("Item not available.")
-    if stock["stock"] <= 0:
-        return update.message.reply_text("Item out of stock.")
-
-    # validate combo counts
-    liquid_count = context.user_data.get("liquid_count", 0)
-    solid_count = context.user_data.get("solid_count", 0)
-
-    if item["category"] == "liquid":
-        if liquid_count >= 1:
-            return update.message.reply_text("You can only select 1 liquid.")
-        context.user_data["liquid_count"] += 1
-    else:
-        if combo_type == "A" and solid_count >= 2:
-            return update.message.reply_text("Combo A allows only 2 solids.")
-        if combo_type == "B" and solid_count >= 1:
-            return update.message.reply_text("Combo B allows only 1 solid.")
-        context.user_data["solid_count"] += 1
-
-    # add to cart
-    cart = context.user_data.get("cart", [])
-    cart.append(item)
-    context.user_data["cart"] = cart
-
-    return update.message.reply_text("Item added to cart.\nSend /cart to view cart.")
-
-
-def view_cart(update: Update, context: CallbackContext):
-    cart = context.user_data.get("cart", [])
-    if not cart:
-        return update.message.reply_text("Cart is empty.")
-
-    message = "🛒 *Your Cart*\n\n"
-    total = 0
-    for idx, item in enumerate(cart, start=1):
-        message += f"{idx}. {item['name']} - ₦{item['price']}\n"
-        total += item["price"]
-
-    packaging_fee = calculate_packaging_fee(len(cart))
-    total += packaging_fee
-
-    message += f"\nPackaging Fee: ₦{packaging_fee}\n"
-    message += f"Total Payable: ₦{total}"
-
-    update.message.reply_text(
-        message,
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("Proceed to Payment", callback_data="proceed_payment")],
-            [InlineKeyboardButton("Clear Cart", callback_data="clear_cart")],
-            [InlineKeyboardButton("Cancel", callback_data="cancel_order")]
-        ])
-    )
-    return CART
-
-
-def clear_cart(update: Update, context: CallbackContext):
-    query = update.callback_query
-    query.answer()
-    context.user_data["cart"] = []
-    context.user_data["liquid_count"] = 0
-    context.user_data["solid_count"] = 0
-    query.edit_message_text("Cart cleared. Start a new order with /start.")
-    return START
-
-
-def cancel_order(update: Update, context: CallbackContext):
-    query = update.callback_query
-    query.answer()
-    context.user_data.clear()
-    query.edit_message_text("Order cancelled. Start again with /start.")
-    return START
-
-
-def choose_hostel(update: Update, context: CallbackContext):
-    update.message.reply_text(
-        "Send your hostel name.\n\nHostels:\n" +
-        "\n".join(HOSTEL_PRIORITY)
-    )
-    return CHOOSE_HOSTEL
-
-
-def receive_hostel(update: Update, context: CallbackContext):
-    hostel = update.message.text.strip()
-    if hostel not in HOSTEL_PRIORITY:
-        return update.message.reply_text("Invalid hostel. Try again.")
-
-    context.user_data["hostel"] = hostel
-    update.message.reply_text("Hostel saved.\nNow go back to /start to order.")
-    return START
-
-
-def assign_time_slot(hostel: str):
-    # count orders in hostel today
-    today = datetime.now().strftime("%Y-%m-%d")
-    rows = db.conn.execute(
-        "SELECT COUNT(*) as count FROM orders WHERE hostel = ? AND DATE(created_at) = ?",
-        (hostel, today)
-    ).fetchone()
-
-    order_count = rows["count"]
-    window_index = order_count // 15  # every 15 orders is one window
-
-    start = datetime.strptime("05:30", "%H:%M") + timedelta(minutes=window_index * DELIVERY_WINDOW_MINUTES)
-    end = start + timedelta(minutes=DELIVERY_WINDOW_MINUTES)
-    return f"{start.strftime('%H:%M')} - {end.strftime('%H:%M')}"
-
-
-def proceed_payment(update: Update, context: CallbackContext):
-    query = update.callback_query
-    query.answer()
-
-    cart = context.user_data.get("cart", [])
-    if not cart:
-        return query.edit_message_text("Cart is empty.")
-
-    hostel = context.user_data.get("hostel")
-    if not hostel:
-        return query.edit_message_text("Send your hostel first with /hostel")
-
-    # validate combo completion
-    liquid_count = context.user_data.get("liquid_count", 0)
-    solid_count = context.user_data.get("solid_count", 0)
-    combo_type = context.user_data.get("combo_type")
-
-    if not validate_combo(combo_type, liquid_count, solid_count):
-        return query.edit_message_text("Your cart does not match the combo rule. Please fix it.")
-
-    # check stock and reduce
-    for item in cart:
-        stock = db.conn.execute("SELECT stock FROM menu WHERE id = ?", (item["id"],)).fetchone()
-        if stock["stock"] <= 0:
-            return query.edit_message_text(f"Item {item['name']} is out of stock.")
-
-    # update stock
-    for item in cart:
-        db.conn.execute("UPDATE menu SET stock = stock - 1 WHERE id = ?", (item["id"],))
-    db.conn.commit()
-
-    # calculate total
-    total = sum(i["price"] for i in cart)
-    packaging_fee = calculate_packaging_fee(len(cart))
-    total += packaging_fee
-
-    # create order
-    reference_code = generate_reference_code()
-    time_slot = assign_time_slot(hostel)
-
-    user = update.effective_user
-    from .models import Order, CartItem
-    order = Order(
-        id=0,
-        user_id=user.id,
-        username=user.username,
-        hostel=hostel,
-        combo_type=combo_type,
-        items=[CartItem(menu_item_id=i["id"], quantity=1, combo_type=combo_type) for i in cart],
-        packaging_fee=packaging_fee,
-        total_amount=total,
-        status="pending",
-        time_slot=time_slot,
-        reference_code=reference_code
-    )
-
-    order_id = db.create_order(order)
-    for item in order.items:
-        db.add_cart_item(order_id, item)
-
-    query.edit_message_text(
-        f"Order placed!\nRef: {reference_code}\nTotal: ₦{total}\nTime Slot: {time_slot}\nStatus: Pending payment.\n\nAdmin will confirm payment."
-    )
-
-    # notify admin
-    context.bot.send_message(
-        ADMIN_USER_ID,
-        f"New Order Pending\nRef: {reference_code}\nUser: @{user.username}\nHostel: {hostel}\nTotal: ₦{total}\nTime Slot: {time_slot}"
-    )
-
-    return PAYMENT
-
-
-def admin_confirm_payment(update: Update, context: CallbackContext):
-    text = update.message.text.strip()
-    if not text.startswith("/confirm"):
+# --- 1. START & HOSTEL SELECTION ---
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Check Kill Switch
+    is_open, msg = is_shop_open()
+    if not is_open:
+        await update.message.reply_text(msg)
         return
 
-    _, ref = text.split(" ", 1)
-    row = db.conn.execute("SELECT * FROM orders WHERE reference_code = ?", (ref,)).fetchone()
-    if not row:
-        return update.message.reply_text("Invalid reference code.")
-
-    db.update_order_status(row["id"], "paid")
-
-    context.bot.send_message(
-        row["user_id"],
-        f"Payment confirmed for order {ref}.\nYour order will be delivered at {row['time_slot']}."
-    )
-    update.message.reply_text("Payment confirmed.")
-
-
-def main():
-    app = Application.builder().token(BOT_TOKEN).build()
-
-    conv = ConversationHandler(
-        entry_points=[CommandHandler("start", start)],
-        states={
-            START: [
-                CallbackQueryHandler(combo_selection, pattern="^combo_"),
-                CallbackQueryHandler(view_cart, pattern="^view_cart$")
-            ],
-            MENU: [
-                CallbackQueryHandler(show_menu, pattern="^show_menu$"),
-                CallbackQueryHandler(view_cart, pattern="^view_cart$"),
-                CallbackQueryHandler(cancel_order, pattern="^cancel_order$"),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_item_id)
-            ],
-            CART: [
-                CallbackQueryHandler(proceed_payment, pattern="^proceed_payment$"),
-                CallbackQueryHandler(clear_cart, pattern="^clear_cart$"),
-                CallbackQueryHandler(cancel_order, pattern="^cancel_order$")
-            ],
-            CHOOSE_HOSTEL: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_hostel)
-            ],
-            PAYMENT: []
-        },
-        fallbacks=[CommandHandler("start", start)]
+    # Reset User Session
+    context.user_data.clear()
+    context.user_data['cart'] = [] # Stores completed combos
+    
+    # Show Hostels
+    keyboard = []
+    # Create rows of 2 buttons for hostels
+    row = []
+    for hostel in HOSTELS:
+        row.append(InlineKeyboardButton(hostel, callback_query_data=f"hostel_{hostel}"))
+        if len(row) == 2:
+            keyboard.append(row)
+            row = []
+    if row: keyboard.append(row)
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text(
+        "🍳 **Welcome to Early To Rise Breakfast Bot!**\n\n"
+        "Please select your **Hostel** for delivery:",
+        reply_markup=reply_markup,
+        parse_mode="Markdown"
     )
 
-    app.add_handler(conv)
-    app.add_handler(CommandHandler("hostel", choose_hostel))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, admin_confirm_payment))
+# --- 2. COMBO SELECTION ---
+async def handle_hostel_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    # Save Hostel
+    hostel_name = query.data.split("_")[1]
+    context.user_data['hostel'] = hostel_name
+    
+    await show_main_menu(update, context)
 
-    app.run_polling()
+async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    cart_count = len(context.user_data.get('cart', []))
+    
+    text = (
+        f"📍 Delivery to: **{context.user_data['hostel']}**\n"
+        f"🛒 Cart: {cart_count} Combo(s)\n\n"
+        "**Choose a Combo to build:**\n"
+        "🅰️ **Combo A:** 1 Liquid + 2 Solids\n"
+        "🅱️ **Combo B:** 1 Liquid + 1 Solid"
+    )
+    
+    keyboard = [
+        [InlineKeyboardButton("Build Combo A", callback_query_data="start_combo_A")],
+        [InlineKeyboardButton("Build Combo B", callback_query_data="start_combo_B")]
+    ]
+    
+    # Only show Checkout if cart is not empty
+    if cart_count > 0:
+        keyboard.append([InlineKeyboardButton(f"✅ Checkout ({cart_count} items)", callback_query_data="checkout")])
+        keyboard.append([InlineKeyboardButton("❌ Clear Cart", callback_query_data="clear_cart")])
+        
+    await update.callback_query.edit_message_text(
+        text, 
+        reply_markup=InlineKeyboardMarkup(keyboard), 
+        parse_mode="Markdown"
+    )
 
+# --- 3. BUILDING A COMBO ---
+async def start_combo_build(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    combo_type = query.data.split("_")[2] # "A" or "B"
+    
+    # Initialize Temporary Builder State
+    context.user_data['builder'] = {
+        'type': combo_type,
+        'liquids': [], # List of names
+        'solids': [],  # List of names
+        'price': 0     # Running total for this combo
+    }
+    
+    await refresh_builder_menu(update, context)
 
-if __name__ == "__main__":
-    main()
+async def refresh_builder_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    builder = context.user_data['builder']
+    c_type = builder['type']
+    config = COMBO_CONFIG[c_type]
+    
+    req_liq = config['req_liquid']
+    req_sol = config['req_solid']
+    cur_liq = len(builder['liquids'])
+    cur_sol = len(builder['solids'])
+    
+    # 1. Check if Combo is Complete
+    if cur_liq == req_liq and cur_sol == req_sol:
+        # Show Summary and "Add to Cart" button
+        text = (
+            f"✅ **Combo {c_type} Complete!**\n\n"
+            f"🥤 Liquids: {', '.join(builder['liquids'])}\n"
+            f"🥞 Solids: {', '.join(builder['solids'])}\n\n"
+            "Add this to your cart?"
+        )
+        keyboard = [
+            [InlineKeyboardButton("📥 Add to Cart", callback_query_data="commit_combo")],
+            [InlineKeyboardButton("🔙 Cancel Combo", callback_query_data="cancel_combo")]
+        ]
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+        return
+
+    # 2. If not complete, show selection menu
+    text = (
+        f"🔨 **Building Combo {c_type}**\n"
+        f"({config['desc']})\n\n"
+        f"🥤 Liquids: {cur_liq}/{req_liq}\n"
+        f"🥞 Solids: {cur_sol}/{req_sol}\n\n"
+        "Select an item to add:"
+    )
+    
+    keyboard = []
+    
+    # Show Liquid Options if limit not reached
+    if cur_liq < req_liq:
+        keyboard.append([InlineKeyboardButton("--- LIQUIDS ---", callback_query_data="ignore")])
+        for name, price in config['menu']['liquid'].items():
+             keyboard.append([InlineKeyboardButton(f"{name} - ₦{price}", callback_query_data=f"add_liquid_{name}")])
+             
+    # Show Solid Options if limit not reached
+    if cur_sol < req_sol:
+        keyboard.append([InlineKeyboardButton("--- SOLIDS ---", callback_query_data="ignore")])
+        for name, price in config['menu']['solid'].items():
+             keyboard.append([InlineKeyboardButton(f"{name} - ₦{price}", callback_query_data=f"add_solid_{name}")])
+
+    keyboard.append([InlineKeyboardButton("🔙 Cancel", callback_query_data="cancel_combo")])
+    
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+
+async def handle_item_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    data = query.data # e.g., "add_liquid_Black Coffee"
+    _, category, item_name = data.split("_", 2)
+    
+    # Stock Check
+    if not check_stock(item_name):
+        await query.answer(f"❌ Sorry, {item_name} is out of stock today!", show_alert=True)
+        return
+    
+    builder = context.user_data['builder']
+    c_type = builder['type']
+    
+    # Get Price
+    price = COMBO_CONFIG[c_type]['menu'][category][item_name]
+    
+    # Update Builder
+    if category == "liquid":
+        builder['liquids'].append(item_name)
+    else:
+        builder['solids'].append(item_name)
+        
+    builder['price'] += price
+    
+    await query.answer(f"Added {item_name}")
+    await refresh_builder_menu(update, context)
+
+async def commit_combo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer("Combo added to cart!")
+    
+    # Move builder to cart
+    context.user_data['cart'].append(context.user_data['builder'])
+    del context.user_data['builder']
+    
+    # Return to main menu
+    await show_main_menu(update, context)
+
+async def cancel_combo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if 'builder' in context.user_data:
+        del context.user_data['builder']
+    await query.answer("Combo selection cancelled")
+    await show_main_menu(update, context)
+
+# --- 4. CART & CHECKOUT ---
+async def clear_cart(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['cart'] = []
+    await update.callback_query.answer("Cart cleared")
+    await show_main_menu(update, context)
+
+async def checkout(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    cart = context.user_data.get('cart', [])
+    hostel = context.user_data.get('hostel')
+    
+    if not cart:
+        await query.answer("Cart is empty!", show_alert=True)
+        return
+
+    # Calculate Totals
+    items_total = sum(item['price'] for item in cart)
+    packaging_total = len(cart) * PACKAGING_FEE
+    grand_total = items_total + packaging_total
+    
+    # Generate Reference
+    ref_code = str(uuid.uuid4())[:8].upper()
+    
+    # Prepare Order Data for DB
+    items_summary = []
+    receipt_text = "🧾 **ORDER SUMMARY**\n\n"
+    
+    all_items_flat_list = [] # For stock reduction
+    
+    for i, combo in enumerate(cart, 1):
+        c_items = combo['liquids'] + combo['solids']
+        all_items_flat_list.extend(c_items)
+        
+        line = f"**Combo {combo['type']}** (₦{combo['price']}):\n" + ", ".join(c_items)
+        items_summary.append({"type": combo['type'], "items": c_items, "price": combo['price']})
+        receipt_text += f"{i}. {line}\n\n"
+
+    receipt_text += f"📦 Packaging Fee: ₦{packaging_total}\n"
+    receipt_text += f"💰 **TOTAL TO PAY: ₦{grand_total}**\n"
+    receipt_text += f"🔑 **REF CODE:** `{ref_code}`\n\n"
+    
+    receipt_text += (
+        "**PAYMENT INSTRUCTIONS:**\n"
+        "1. Transfer ₦{grand_total} to:\n"
+        "   **Bank:** OPAY\n"
+        "   **Acct:** 1234567890\n"
+        "   **Name:** Early To Rise\n\n"
+        "2. Include `{ref_code}` in the transfer description.\n"
+        "3. Wait for Admin confirmation here."
+    ).format(grand_total=grand_total, ref_code=ref_code)
+
+    # SAVE TO DB
+    save_order(
+        user_id=update.effective_user.id,
+        ref_code=ref_code,
+        hostel=hostel,
+        items_data=items_summary,
+        total_price=grand_total
+    )
+    
+    # REDUCE STOCK IMMEDIATELY (As per standard e-commerce reservation logic)
+    reduce_stock(all_items_flat_list)
+    
+    # Notify Admin (Optional, but good for awareness)
+    try:
+        await context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=f"🔔 **New Order Placed!**\nRef: `{ref_code}`\nHostel: {hostel}\nTotal: ₦{grand_total}",
+            parse_mode="Markdown"
+        )
+    except:
+        pass # If admin hasn't started bot, ignore
+
+    await query.edit_message_text(receipt_text, parse_mode="Markdown")
+    # Clear cart after order
+    context.user_data['cart'] = []
+
+# --- 5. ADMIN CONFIRMATION COMMAND ---
+async def admin_confirm_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    
+    # Security Check
+    if user_id != ADMIN_ID:
+        return # Ignore non-admins silently
+
+    try:
+        ref_code = context.args[0].strip()
+    except (IndexError, AttributeError):
+        await update.message.reply_text("❌ Usage: /confirm <REF_CODE>")
+        return
+
+    order = get_order(ref_code)
+    
+    if not order:
+        await update.message.reply_text("❌ Order not found.")
+        return
+        
+    if order['status'] == 'PAID':
+        await update.message.reply_text(f"⚠️ Order {ref_code} is already confirmed.")
+        return
+
+    # Calculate Time Slot
+    hostel = order['hostel']
+    
+    # 1. Get how many people in this hostel have ALREADY paid today
+    current_paid_count = get_paid_count_for_hostel(hostel)
+    
+    # 2. Calculate slot based on (count + 1)
+    # The count returns previous orders. The current order is index = count.
+    # e.g., if 0 exist, this is index 0 (1st order).
+    time_slot = calculate_time_slot(current_paid_count)
+    
+    # Update DB
+    update_order_paid(ref_code, time_slot)
+    
+    # Notify Admin
+    await update.message.reply_text(f"✅ confirmed! Slot {time_slot} assigned to {hostel}.")
+    
+    # Notify User
+    try:
+        await context.bot.send_message(
+            chat_id=order['user_id'],
+            text=(
+                f"🎉 **PAYMENT CONFIRMED!**\n\n"
+                f"Order Ref: `{ref_code}`\n"
+                f"Hostel: {hostel}\n"
+                f"🚚 **Your Delivery Window:**\n"
+                f"👉 **{time_slot}**\n\n"
+                f"Please come out to the entrance at this time."
+            ),
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        await update.message.reply_text(f"⚠️ Payment saved, but failed to msg user: {e}")
+
+# --- HANDLER MAPPER (Used in bot.py) ---
+# We will define the ConversationHandler or basic handlers in bot.py 
+# but here are the callback functions ready to be imported.
