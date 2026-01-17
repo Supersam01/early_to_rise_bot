@@ -1,50 +1,39 @@
-import random
-import string
 from datetime import datetime, timedelta
-from typing import List
-from .config import HOSTEL_PRIORITY, DELIVERY_WINDOW_MINUTES, PACKAGING_FEE_PER_ITEM
-from .models import CartItem, MenuItem
 
-
-def generate_reference_code(length=8):
-    return ''.join(random.choices(string.ascii_uppercase + string.digits, k=length))
-
-
-def calculate_packaging_fee(num_items: int):
-    return num_items * PACKAGING_FEE_PER_ITEM
-
-
-def calculate_total(items: List[MenuItem], quantities: List[int]):
-    total = 0
-    for item, qty in zip(items, quantities):
-        total += item.price * qty
-    return total
-
-
-def validate_combo(combo_type: str, liquid_count: int, solid_count: int):
+def calculate_time_slot(order_index):
     """
-    Combo A: 1 liquid + 2 solids
-    Combo B: 1 liquid + 1 solid
+    Calculates the delivery time slot based on the order index for a hostel.
+    
+    Rules:
+    - Starts at 5:30 AM.
+    - Windows are 10 minutes long.
+    - Each window accommodates 15 orders.
+    
+    Example:
+    Orders 0-14  (First 15) -> 5:30 AM - 5:40 AM
+    Orders 15-29 (Next 15)  -> 5:40 AM - 5:50 AM
+    ...
+    Orders 135-149 (Last 15) -> 7:00 AM - 7:10 AM
     """
-    if combo_type == "A":
-        return liquid_count == 1 and solid_count == 2
-    if combo_type == "B":
-        return liquid_count == 1 and solid_count == 1
-    return False
-
-
-def assign_time_slot(hostel: str, position: int):
-    """
-    Assign time slot based on hostel priority and order position.
-    Each hostel gets a 10-minute window.
-    """
-    try:
-        index = HOSTEL_PRIORITY.index(hostel)
-    except ValueError:
-        index = 0
-
-    start_time = datetime.strptime("05:30", "%H:%M")
-    start_time += timedelta(minutes=index * DELIVERY_WINDOW_MINUTES)
-
-    end_time = start_time + timedelta(minutes=DELIVERY_WINDOW_MINUTES)
-    return f"{start_time.strftime('%H:%M')} - {end_time.strftime('%H:%M')}"
+    
+    # Base start time: 5:30 AM
+    # We use a dummy date because we only care about the time
+    base_time = datetime.strptime("05:30", "%H:%M")
+    
+    # Calculate which 10-minute window this order falls into
+    # Integer division // 15 groups orders into batches of 15
+    window_index = order_index // 15
+    
+    # Calculate the start time for this specific window
+    # window_index * 10 minutes
+    time_offset = timedelta(minutes=window_index * 10)
+    
+    slot_start = base_time + time_offset
+    slot_end = slot_start + timedelta(minutes=10)
+    
+    # Format the time nicely (e.g., "05:30AM – 05:40AM")
+    # %I is 12-hour format, %M is minutes, %p is AM/PM
+    start_str = slot_start.strftime("%I:%M%p").lower()
+    end_str = slot_end.strftime("%I:%M%p").lower()
+    
+    return f"{start_str} – {end_str}"
